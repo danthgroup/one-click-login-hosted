@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One-click login</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f6f6f4; color: #1a1a1a; }
+  main { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: #666; margin: 0 0 20px; }
+  .steps { display: flex; gap: 8px; margin: 0 0 20px; padding: 0; list-style: none; }
+  .steps li { flex: 1; background: #fff; border: 1px solid #e3e3e0; border-radius: 10px; padding: 10px; font-size: 13px; line-height: 1.35; }
+  .steps li b { display: block; font-size: 12px; color: #888; margin-bottom: 2px; }
+  .card { background: #fff; border: 1px solid #e3e3e0; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 6px; }
+  .card p { margin: 0 0 12px; color: #555; font-size: 14px; line-height: 1.5; }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+  .pill.wait { background: #fff3cd; color: #7a5b00; }
+  .pill.in { background: #d9f2e2; color: #146c2e; }
+  .pill.out { background: #fde8e8; color: #9b1c1c; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid #eee; }
+  .row:first-of-type { border-top: 0; }
+  .row .name { font-weight: 600; }
+  button { border: 0; border-radius: 999px; padding: 10px 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button.approve { background: #16a34a; color: #fff; }
+  button.deny { background: #f1f1ef; color: #333; }
+  button.ghost { background: #f1f1ef; color: #333; }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: #888; font-size: 13px; }
+  .err { color: #9b1c1c; font-size: 14px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>One-click login</h1>
+  <p class="sub">Opening this link is the request. Approve on the phone that has the login.</p>
+
+  <ol class="steps">
+    <li><b>1</b>Link opened</li>
+    <li><b>2</b>Phone taps Approve</li>
+    <li><b>3</b>Device signed in</li>
+  </ol>
+
+  <div class="card" id="me">
+    <h2>This device</h2>
+    <div id="me-status"><span class="pill wait">Waiting for approve…</span></div>
+    <p id="me-text" style="margin-top:10px">Waiting for the phone to approve this device.</p>
+    <div id="me-actions"></div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="card">
+    <h2>Approve on this phone</h2>
+    <p>Devices waiting for access. Tap Approve once to give one access.</p>
+    <div id="waiting"><span class="muted">No devices waiting.</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Signed in</h2>
+    <div id="sessions"><span class="muted">No devices signed in.</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Past requests</h2>
+    <div id="past"><span class="muted">Nothing yet.</span></div>
+    <p style="margin-top:12px"><button class="ghost" id="clear-past">Clear past requests</button></p>
+  </div>
+</main>
+
+<script>
+let busy = false;
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body || {}),
+  });
+  return r.json();
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function refresh() {
+  if (busy) return;
+  try {
+    const s = await api('/api/state');
+    // This device
+    const meStatus = document.getElementById('me-status');
+    const meText = document.getElementById('me-text');
+    const meActions = document.getElementById('me-actions');
+    if (s.signedIn) {
+      meStatus.innerHTML = '<span class="pill in">Signed in</span>';
+      meText.textContent = 'This device has access and stays in.';
+      meActions.innerHTML = '<button class="ghost" id="signout">Sign out this device</button>';
+      document.getElementById('signout').onclick = async () => { await api('/api/signout', {}); refresh(); };
+    } else if (s.approver) {
+      meStatus.innerHTML = '<span class="pill in">Approver phone</span>';
+      meText.textContent = 'This is the phone that approves. It does not need access itself.';
+      meActions.innerHTML = '';
+    } else if (s.myRequest) {
+      meStatus.innerHTML = '<span class="pill wait">Waiting for approve…</span>';
+      meText.textContent = 'Waiting for the phone to approve this device.';
+      meActions.innerHTML = '<button class="ghost" id="cancel">Cancel</button>';
+      document.getElementById('cancel').onclick = async () => { await api('/api/cancel', {}); refresh(); };
+    } else {
+      meStatus.innerHTML = '<span class="pill out">Not waiting</span>';
+      meText.textContent = 'This device is not waiting for access.';
+      meActions.innerHTML = '<button class="approve" id="ask-again">Ask again</button>';
+      document.getElementById('ask-again').onclick = async () => { await api('/api/ask-again', {}); refresh(); };
+    }
+    // Waiting devices (others) — approve / deny
+    const w = document.getElementById('waiting');
+    if (!s.waiting.length) {
+      w.innerHTML = '<span class="muted">No devices waiting.</span>';
+    } else {
+      w.innerHTML = s.waiting.map(d => `
+        <div class="row"><span class="name">${esc(d.deviceName)}</span>
+        <span><button class="deny" data-deny="${esc(d.id)}">Deny</button>
+        <button class="approve" data-approve="${esc(d.id)}">Approve</button></span></div>`).join('');
+      w.querySelectorAll('[data-approve]').forEach(b => b.onclick = async () => {
+        const r = await api('/api/approve', { requestId: b.dataset.approve });
+        if (!r.ok) document.getElementById('err').textContent = r.error || '';
+        refresh();
+      });
+      w.querySelectorAll('[data-deny]').forEach(b => b.onclick = async () => {
+        const r = await api('/api/deny', { requestId: b.dataset.deny });
+        if (!r.ok) document.getElementById('err').textContent = r.error || '';
+        refresh();
+      });
+    }
+    // Signed-in devices
+    const ss = document.getElementById('sessions');
+    ss.innerHTML = s.sessions.length
+      ? s.sessions.map(x => `<div class="row"><span class="name">${esc(x.deviceName)}${x.mine ? ' (this device)' : ''}</span><span class="pill in">Signed in</span></div>`).join('')
+      : '<span class="muted">No devices signed in.</span>';
+    // Past
+    const p = document.getElementById('past');
+    p.innerHTML = s.past.length
+      ? s.past.map(x => `<div class="row"><span class="name">${esc(x.deviceName)}${x.mine ? ' (this device)' : ''}</span><span class="pill ${x.status === 'approved' ? 'in' : 'out'}">${esc(x.status)}</span></div>`).join('')
+      : '<span class="muted">Nothing yet.</span>';
+  } catch (e) { /* next poll retries */ }
+}
+document.getElementById('clear-past').onclick = async () => { await api('/api/clear-past', {}); refresh(); };
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
